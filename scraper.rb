@@ -2,15 +2,15 @@ require 'scraperwiki'
 require 'mechanize'
 
 BASE_URL = 'https://www.aph.gov.au'
+# 96 is the maximum page size the APH search supports
+PAGE_SIZE = 96
 
 def save_results_from_page(page, house)
-  # Results are now individual <section> or <h4>-headed blocks, not <li> in .search-filter-results.
-  # Each result is an <h4> with an <a> linking to the profile, followed by a <dl> with details.
+  # Results are now <h4> + <dl> blocks, not <li> inside .search-filter-results
   page.search('h4 a[href*="MPID"]').each do |link|
     aph_id = link.attr(:href).match(/MPID\=(.*)/)[1]
     full_name = link.inner_text.strip
 
-    # The <dl> immediately follows the <h4> parent
     # Note: avoid &. safe navigation operator — Morph runs Ruby 1.9 which doesn't support it
     h4 = link.ancestors('h4').first
     dl = h4 ? h4.next_element : nil
@@ -31,7 +31,6 @@ def save_results_from_page(page, house)
 
     profile_page_url = "#{BASE_URL}/Senators_and_Members/Parliamentarian?MPID=#{aph_id}"
 
-    # Fetch individual profile page for email and website
     email = nil
     facebook = nil
     twitter = nil
@@ -40,7 +39,6 @@ def save_results_from_page(page, house)
     begin
       profile_page = @agent.get profile_page_url
 
-      # Scan all links for email, social, and personal website
       profile_page.search('a[href]').each do |a|
         href = a.attr(:href)
         next if href.nil?
@@ -59,7 +57,6 @@ def save_results_from_page(page, house)
       puts "  Warning: could not fetch profile for #{full_name}: #{e.message}"
     end
 
-    # Photo URL is now served from the API endpoint
     photo_url = "#{BASE_URL}/api/parliamentarian/#{aph_id}/image"
 
     record = {
@@ -82,15 +79,34 @@ def save_results_from_page(page, house)
   end
 end
 
+def scrape_chamber(chamber_param, house)
+  search_url = "#{BASE_URL}/Senators_and_Members/Parliamentarian_Search_Results"
+  page_num = 1
+
+  loop do
+    # We build pagination URLs manually rather than following the "Next" link,
+    # because the "Next" link drops the chamber filter (mem=1/sen=1) from the
+    # query string, causing page 2+ to return a 404.
+    url = "#{search_url}?page=#{page_num}&q=&#{chamber_param}&par=-1&gen=0&ps=#{PAGE_SIZE}&st=1"
+    puts "Fetching page #{page_num} (#{house})..."
+    page = @agent.get url
+
+    results = page.search('h4 a[href*="MPID"]')
+    break if results.empty?
+
+    save_results_from_page(page, house)
+
+    # Stop if there's no "Next" link (we're on the last page)
+    break unless page.link_with(:text => 'Next')
+
+    page_num += 1
+  end
+end
+
 @agent = Mechanize.new
-# Use ps=0 to return all results on a single page, avoiding pagination entirely.
-# The old pagination was broken because the "Next" link dropped mem=1/sen=1 from the query string.
-search_url = "#{BASE_URL}/Senators_and_Members/Parliamentarian_Search_Results"
 
-puts "Saving results from Representatives page"
-page = @agent.get "#{search_url}?q=&mem=1&par=-1&gen=0&ps=0"
-save_results_from_page(page, :representatives)
+puts "Saving results from Representatives pages"
+scrape_chamber('mem=1', :representatives)
 
-puts "Saving results from Senate page"
-page = @agent.get "#{search_url}?q=&sen=1&par=-1&gen=0&ps=0"
-save_results_from_page(page, :senate)
+puts "Saving results from Senate pages"
+scrape_chamber('sen=1', :senate)
