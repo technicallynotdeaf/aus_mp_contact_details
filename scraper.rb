@@ -11,18 +11,20 @@ def save_results_from_page(page, house)
     full_name = link.inner_text.strip
 
     # The <dl> immediately follows the <h4> parent
-    dl = link.ancestors('h4').first&.next_element
+    # Note: avoid &. safe navigation operator — Morph runs Ruby 1.9 which doesn't support it
+    h4 = link.ancestors('h4').first
+    dl = h4 ? h4.next_element : nil
     electorate = nil
     party = nil
 
     if dl && dl.name == 'dl'
       dl.search('dt').each do |dt|
+        next_el = dt.next_element
         case dt.inner_text.strip
         when 'For'
-          # "For: Calwell, Victoria" — strip the state suffix for members, keep as-is for senators
-          electorate = dt.next_element&.inner_text&.strip
+          electorate = next_el ? next_el.inner_text.strip : nil
         when 'Party'
-          party = dt.next_element&.inner_text&.strip
+          party = next_el ? next_el.inner_text.strip : nil
         end
       end
     end
@@ -38,37 +40,19 @@ def save_results_from_page(page, house)
     begin
       profile_page = @agent.get profile_page_url
 
-      # Email is in the Connect section as a mailto: link
-      email_link = profile_page.search('a[href^="mailto:"]').first
-      email = email_link.attr(:href).sub('mailto:', '').strip if email_link
-
-      # Website links appear under the "Websites" section
-      # They're plain <a> tags that aren't mailto: and aren't aph.gov.au internal links
+      # Scan all links for email, social, and personal website
       profile_page.search('a[href]').each do |a|
         href = a.attr(:href)
-        next if href.start_with?('mailto:', 'javascript:', '#', 'tel:')
-        next if href.include?('aph.gov.au')
-        next if href.include?('parlinfo.aph.gov.au')
-        next if href.include?('parlwork.aph.gov.au')
-        next if href.include?('facebook.com') || href.include?('twitter.com') || href.include?('x.com')
-
-        # Pick up facebook/twitter separately
-        if href.include?('facebook.com')
-          facebook = href
-        elsif href.include?('twitter.com') || href.include?('x.com')
-          twitter = href
-        elsif website.nil? && href.start_with?('http')
-          website = href
-        end
-      end
-
-      # Re-scan for social links explicitly
-      profile_page.search('a[href]').each do |a|
-        href = a.attr(:href)
-        if href.include?('facebook.com') && facebook.nil?
+        next if href.nil?
+        if href.start_with?('mailto:')
+          email ||= href.sub('mailto:', '').strip
+        elsif href.include?('facebook.com') && facebook.nil?
           facebook = href
         elsif (href.include?('twitter.com') || href.include?('x.com')) && twitter.nil?
           twitter = href
+        elsif website.nil? && href.start_with?('http') &&
+              !href.include?('aph.gov.au') && !href.include?('surveymonkey.com')
+          website = href
         end
       end
     rescue => e
